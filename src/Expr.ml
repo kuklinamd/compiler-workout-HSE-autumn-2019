@@ -36,12 +36,12 @@ let update x v s = fun y -> if x = y then v else s y
 let s = update "x" 1 @@ update "y" 2 @@ update "z" 3 @@ update "t" 4 empty
 
 (* Some testing; comment this definition out when submitting the solution. *)
-let _ =
+(*let _ =
   List.iter
     (fun x ->
        try  Printf.printf "%s=%d\n" x @@ s x
        with Failure s -> Printf.printf "%s\n" s
-    ) ["x"; "a"; "y"; "z"; "t"; "b"]
+    ) ["x"; "a"; "y"; "z"; "t"; "b"]*)
 
 (* Expression evaluator
 
@@ -50,5 +50,33 @@ let _ =
    Takes a state and an expression, and returns the value of the expression in 
    the given state.
 *)
-let eval = failwith "Not implemented yet"
-                    
+(*let eval = failwith "Not implemented yet"*)
+
+let toBool x =
+  match x with
+    | 0 -> false
+    | _ -> true
+
+let toInt b = if b then 1 else 0
+
+let matchOp op =
+  match op with
+    | "+" -> (+)
+    | "-" -> (-)
+    | "*" -> ( * )
+    | "%" -> (mod)
+    | "<" ->  (fun x y -> toInt (x <  y))
+    | ">" ->  (fun x y -> toInt (x >  y))
+    | "<=" -> (fun x y -> toInt (x <= y))
+    | ">=" -> (fun x y -> toInt (x >= y))
+    | "==" -> (fun x y -> toInt (x =  y))
+    | "!=" -> (fun x y -> toInt (x <> y))
+    | "&&" -> (fun x y -> toInt ((toBool x) && (toBool y)))
+    | "!!" -> (fun x y -> toInt ((toBool x) || (toBool y)))
+    | x -> failwith @@ Printf.sprintf "Unsupported operation: %s" x
+
+let rec eval state expr =
+  match expr with
+    | Const i -> i
+    | Var   x -> state x
+    | Binop (op, expr1, expr2) -> matchOp op (eval state expr1) (eval state expr2)
