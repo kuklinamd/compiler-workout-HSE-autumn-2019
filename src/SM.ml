@@ -30,7 +30,7 @@ let matchOp = Syntax.Expr.matchOp
 
 let binop (stack, c) op =
   match stack with
-    | x :: y :: stack' -> ((matchOp op x y) :: stack', c)
+    | y :: x :: stack' -> ((matchOp op x y) :: stack', c)
     | _ -> failwith "Unable to apply binary operation: too few elements in the stack."
  
 let const (stack, c) x = (x :: stack, c)
