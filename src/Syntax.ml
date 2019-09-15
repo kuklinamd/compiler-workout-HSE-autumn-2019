@@ -88,13 +88,34 @@ module Stmt =
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = Expr.state * int list * int list 
 
+    let extract_state (state, _, _) = state
+
+
     (* Statement evaluator
 
           val eval : config -> t -> config
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
+
+    (*let eval _ = failwith "Not implemented yet"*)
+
+    let read (state, input, output) var =
+      match input with
+        | i :: ins -> (Expr.update var i state, ins, output)
+        | _ -> failwith "Nothing to read from the input."
+
+    let write (state, input, output) value = (state, input, value :: output)
+
+    let assign (state, input, output) var value = (Expr.update var value state, input, output)
+    
+    let rec eval config stmt =
+      let state = extract_state config in
+      match stmt with
+        | Read var           -> read config var
+        | Write expr         -> write config (Expr.eval state expr)
+        | Assign (var, expr) -> assign config var (Expr.eval state expr)
+        | Seq (stmt1, stmt2) -> eval (eval config stmt1) stmt2
                                                          
   end
 
