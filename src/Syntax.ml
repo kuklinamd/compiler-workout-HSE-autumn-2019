@@ -34,6 +34,29 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
+    let toBool x =
+      match x with
+        | 0 -> false
+        | _ -> true
+
+    let toInt b = if b then 1 else 0
+
+    let matchOp op =
+      match op with
+        | "+" -> (+)
+        | "-" -> (-)
+        | "*" -> ( * )
+        | "%" -> (mod)
+        | "<" ->  (fun x y -> toInt (x <  y))
+        | ">" ->  (fun x y -> toInt (x >  y))
+        | "<=" -> (fun x y -> toInt (x <= y))
+        | ">=" -> (fun x y -> toInt (x >= y))
+        | "==" -> (fun x y -> toInt (x =  y))
+        | "!=" -> (fun x y -> toInt (x <> y))
+        | "&&" -> (fun x y -> toInt ((toBool x) && (toBool y)))
+        | "!!" -> (fun x y -> toInt ((toBool x) || (toBool y)))
+        | x -> failwith @@ Printf.sprintf "Unsupported operation: %s" x
+
     (* Expression evaluator
 
           val eval : state -> t -> int
@@ -41,8 +64,14 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
 
+    let rec eval state expr =
+      match expr with
+        | Const i -> i
+        | Var   x -> state x
+        | Binop (op, expr1, expr2) -> matchOp op (eval state expr1) (eval state expr2)
+
+   (*let eval _ = failwith "Not implemented yet"*)
   end
                     
 (* Simple statements: syntax and sematics *)
