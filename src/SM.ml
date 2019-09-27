@@ -24,7 +24,48 @@ type config = int list * Stmt.config
 
    Takes a configuration and a program, and returns a configuration as a result
  *)                         
-let eval _ = failwith "Not yet implemented"
+(*let eval _ = failwith "Not yet implemented"*)
+
+let matchOp = Language.Expr.matchOp
+
+let binop (stack, c) op =
+  match stack with
+    | y :: x :: stack' -> ((matchOp op x y) :: stack', c)
+    | _ -> failwith "Unable to apply binary operation: too few elements in the stack."
+
+let const (stack, c) x = (x :: stack, c)
+
+let read (stack, (s, input, o)) =
+  match input with
+    | i :: ins -> (i :: stack, (s, ins, o))
+    | _ -> failwith "Unable to read from the input: empty input."
+
+let write (stack, (state, i, output)) =
+  match stack with
+    | s :: stack' -> (stack', (state, i, output @ [s]))
+    | _  -> failwith "Unable to write to the output: empty stack."
+
+let load (stack, (state, i, o)) v = ((state v) :: stack, (state, i, o))
+
+let store (stack, (state, i, o)) v =
+  match stack with
+    | s :: stack' -> (stack', (Language.Expr.update v s state, i, o))
+    | _ -> failwith "Unable to store a value: empty stack."
+
+let eval_inst config inst =
+  match inst with
+    | BINOP op -> binop config op
+    | CONST x  -> const config x
+    | READ     -> read config
+    | WRITE    -> write config
+    | LD    v  -> load config v
+    | ST    v  -> store config v
+
+let rec eval config prog =
+  match prog with
+    | inst :: insts -> eval (eval_inst config inst) insts
+    | _ -> config
+
 
 (* Top-level evaluation
 
@@ -41,4 +82,17 @@ let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in 
    Takes a program in the source language and returns an equivalent program for the
    stack machine
  *)
-let compile _ = failwith "Not yet implemented"
+(*let compile _ = failwith "Not yet implemented"*)
+
+let rec compile_expr expr =
+  match expr with
+    | Language.Expr.Const x -> [CONST x]
+    | Language.Expr.Var v -> [LD v]
+    | Language.Expr.Binop (op, expr1, expr2) -> compile_expr expr1 @ compile_expr expr2 @ [BINOP op]
+
+let rec compile stmt =
+  match stmt with
+    | Language.Stmt.Read v             -> [READ; ST v]
+    | Language.Stmt.Write expr         -> compile_expr expr @ [WRITE]
+    | Language.Stmt.Assign (v, expr)   -> compile_expr expr @ [ST v]
+    | Language.Stmt.Seq (stmt1, stmt2) -> compile stmt1 @ compile stmt2
