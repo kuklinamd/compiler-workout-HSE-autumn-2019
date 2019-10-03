@@ -86,7 +86,77 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+
+let match_cmp_op = function
+   | "<"  -> "a"
+   | ">"  -> "b"
+   | "<=" -> "ae"
+   | ">=" -> "be"
+   | "==" -> "e"
+   | "!=" -> "ne"
+
+let compile_binop env op =
+  let x, y, env = env#pop2 in
+   env#push x,
+   match op with
+   | "+" | "-" ->
+     [Mov (x, eax);
+      Mov (y, ebx);
+      Binop (op, eax, ebx);
+      Mov (ebx, x)]
+   | "&&" | "!!" ->
+     [Mov (x, eax);
+      Mov (y, ebx);
+      Binop (op, eax, ebx);
+      Set ("nz", "%al");
+      Mov (eax, x)]
+   | "*" ->
+     [Mov (x, eax);
+      Mov (y, ebx);
+      Binop (op, eax, ebx);
+      Mov (ebx, x)]
+   | "/" ->
+     [Mov (y, eax);
+      Mov (L 0, edx);
+      IDiv x;
+      Mov (eax, x)]
+   | "%" ->
+     [Mov (y, eax);
+      Mov (L 0, edx);
+      IDiv x;
+      Mov (edx, x)]
+   | cmp_op ->
+     [Mov (x, eax);
+      Mov (y, ebx);
+      Binop ("cmp", x, y);
+      Set (match_cmp_op cmp_op, "%al");
+      Mov (eax, x)]
+
+let compile_instr env = function
+  | CONST x ->
+    let pos, env = env#allocate in
+        (env, [Mov (L x, pos)])
+  | LD v ->
+    let pos, env = env#allocate in
+        (env#global v, [Mov (M (env#loc v), eax); Mov (eax, pos)])
+  | ST v ->
+    let var, env = env#pop in
+       (env#global v, [Mov (var, eax); Mov (eax, M (env#loc v))])
+  | WRITE ->
+    let var, env = env#pop in
+       (env, [Push var; Call "Lwrite"; Pop eax])
+  | READ  ->
+    let pos, env = env#allocate in
+       (env, [Call "Lread"; Mov (eax, pos)])
+  | BINOP op -> compile_binop env op
+
+
+let rec compile env = function
+  | [] -> env, []
+  | instr :: prog ->
+    let env, is = compile_instr env instr in
+    let env, rest = compile env prog in
+    (env, is @ rest)
 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -104,14 +174,13 @@ class env =
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
       let x, n =
-	let rec allocate' = function
-	| []                            -> ebx     , 0
-	| (S n)::_                      -> S (n+1) , n+1
-	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | (M _)::s                      -> allocate' s
-	| _                             -> S 0     , 1
-	in
-	allocate' stack
+        let rec allocate' = function
+        | []                            -> ebx     , 0
+        | (S n)::_                      -> S (n+1) , n+1
+        | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
+        | _                             -> S 0     , 1
+        in
+        allocate' stack
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 
