@@ -16,6 +16,12 @@ type opnd =
 | M of string  (* a named memory location          *)
 | L of int     (* an immediate operand             *)
 
+let show_opnd = function
+  | R i -> regs.(i)
+  | S i -> Printf.sprintf "-%d(%%ebp)" ((i+1) * word_size)
+  | M x -> x
+  | L i -> Printf.sprintf "$%d" i
+
 (* For convenience we define the following synonyms for the registers: *)         
 let ebx = R 0
 let ecx = R 1
@@ -88,36 +94,39 @@ open SM
 *)
 
 let match_cmp_op = function
-   | "<"  -> "a"
-   | ">"  -> "b"
-   | "<=" -> "ae"
-   | ">=" -> "be"
+   | "<"  -> "l"
+   | ">"  -> "g"
+   | "<=" -> "le"
+   | ">=" -> "ge"
    | "==" -> "e"
    | "!=" -> "ne"
 
+(*
 let compile_binop env op =
   let x, y, env = env#pop2 in
-   env#push x,
-   match op with
+  env#push x, match op with
    | "+" | "-" ->
      [Mov (x, eax);
       Mov (y, ebx);
       Binop (op, eax, ebx);
-      Mov (ebx, x)]
+      Mov (ebx, x);]
    | "&&" | "!!" ->
      [Mov (x, eax);
       Mov (y, ebx);
+	  TODO: test (1 !! 2)
       Binop (op, eax, ebx);
       Set ("nz", "%al");
       Mov (eax, x)]
    | "*" ->
      [Mov (x, eax);
       Mov (y, ebx);
+      Binop ("^", edx, edx);
       Binop (op, eax, ebx);
-      Mov (ebx, x)]
+      Mov (ebx, x);
+      Push x]
    | "/" ->
      [Mov (y, eax);
-      Mov (L 0, edx);
+      Binop ("^", edx, edx);
       IDiv x;
       Mov (eax, x)]
    | "%" ->
@@ -128,28 +137,99 @@ let compile_binop env op =
    | cmp_op ->
      [Mov (x, eax);
       Mov (y, ebx);
+      Binop ("^", edx, edx);
       Binop ("cmp", x, y);
-      Set (match_cmp_op cmp_op, "%al");
-      Mov (eax, x)]
+      Set (match_cmp_op cmp_op, "%dl");
+      Mov (edx, x)]
+*)
+let compile_binop env op = 
+  let x, y, env = env#pop2 in
+  let env = env#push y in
+  env, match op with
+  | "+" | "-" ->
+    (match x with
+     | R _ ->
+       [Binop (op, x, y)]
+     | _   ->
+       [Mov (x, eax);
+        Binop (op, eax, y)]
+    ) 
+  | "*" ->
+    (match y with
+     | R _ ->
+       [Binop (op, x, y)]
+     | _   ->
+       [Mov (y, eax);
+        Binop (op, x, eax);
+        Mov (eax, y)]
+    ) 
+  | "!!" ->
+    (match x with
+     | R _ ->
+       [Binop ("^", edx, edx);
+        Binop (op, x, y);
+        Set ("nz", "%dl");
+        Mov (edx, y)]
+     | _   ->
+       [Mov (x, eax); 
+        Binop ("^", edx, edx);
+        Binop (op, eax, y);
+        Set ("nz", "%dl");
+        Mov (edx, y)]
+    ) 
+  | "&&" ->
+       [Mov (x, eax);
+        Binop ("cmp", L 0, eax);
+        Set ("nz", "%al");
+        Mov (y, edx);
+        Binop ("cmp", L 0, edx);
+        Set ("nz", "%dl");
+        Binop ("&&", edx, eax);
+        Binop ("&&", L 1, eax);
+        Mov (eax, y)]
+  | "/" ->
+       [Mov (y, eax);
+		Cltd;
+        IDiv x;
+        Mov (eax, y)
+       ]
+  | "%" ->
+       [Mov (y, eax);
+		Cltd;
+        IDiv x;
+        Mov (edx, y)
+       ]
+  | _ ->
+       [Mov   (x, eax);
+        Binop ("^", edx, edx);
+        Binop ("cmp", eax, y);
+        Set   (match_cmp_op op, "%dl");
+        Mov   (edx, y)]
 
 let compile_instr env = function
   | CONST x ->
     let pos, env = env#allocate in
-        (env, [Mov (L x, pos)])
+      (env, [Mov (L x, pos)])
   | LD v ->
     let pos, env = env#allocate in
-        (env#global v, [Mov (M (env#loc v), eax); Mov (eax, pos)])
+      (env#global v, [Mov (M (env#loc v), eax); Mov (eax, pos)])
   | ST v ->
     let var, env = env#pop in
-       (env#global v, [Mov (var, eax); Mov (eax, M (env#loc v))])
+     (env#global v, [Mov (var, eax); Mov (eax, M (env#loc v))])
   | WRITE ->
     let var, env = env#pop in
-       (env, [Push var; Call "Lwrite"; Pop eax])
+     (env, [Push var; Call "Lwrite"; Pop eax])
   | READ  ->
-    let pos, env = env#allocate in
-       (env, [Call "Lread"; Mov (eax, pos)])
-  | BINOP op -> compile_binop env op
-
+    (let pos, env = env#allocate in
+     (env, [Call "Lread"; Mov (eax, pos)]))
+  | BINOP op          -> compile_binop env op
+  | LABEL label       -> (env, [Label label])
+  | JMP label         -> (env, [Jmp label])
+  | CJMP (cnd, label) -> 
+    let var, env = env#pop in
+     (env, [Mov (var, eax);
+            Binop ("cmp", L 0, eax);
+            CJmp (cnd, label)]) 
 
 let rec compile env = function
   | [] -> env, []

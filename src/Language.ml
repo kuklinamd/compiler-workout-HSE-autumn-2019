@@ -156,22 +156,50 @@ module Stmt =
     let rec eval config stmt =
       let state = extract_state config in
       match stmt with
-        | Read var           -> read config var
-        | Write expr         -> write config (Expr.eval state expr)
-        | Assign (var, expr) -> assign config var (Expr.eval state expr)
-        | Seq (stmt1, stmt2) -> eval (eval config stmt1) stmt2
-
-
+        | Read var            -> read config var
+        | Write expr          -> write config (Expr.eval state expr)
+        | Assign (var, expr)  -> assign config var (Expr.eval state expr)
+        | Seq (stmt1, stmt2)  -> eval (eval config stmt1) stmt2
+        | Skip                -> config
+        | If (cond, thn, els) ->
+          if Expr.eval state cond != 0
+          then eval config thn
+          else eval config els
+        | While (cond, body)  ->
+          if Expr.eval state cond != 0
+          then eval (eval config body) stmt
+          else config
+ 
     (* Statement parser *)
     ostap (
       parse: stmts; (*empty {failwith "Not implemented yet"}*)
 
       expr: !(Expr.parse);
 
+      special_elif:
+        -"elif" e:expr -"then" thn:stmts els:special_elif {If (e, thn, els)}
+      | -"else" s:stmts -"fi" 							  {s}
+      | -"fi"                                             {Skip}
+      ;
+
+      special_if:
+        -"if" e:expr -"then" thn:stmts els:special_elif {If (e, thn, els)}
+      ;
+
       stmt:
-          x:IDENT -":=" e:expr    {Assign (x, e)}
+          x:IDENT -":=" e:expr      {Assign (x, e)}
         | -"write" -"(" e:expr -")" {Write e}
-        | -"read" -"(" x:IDENT -")" {Read x};
+        | -"read" -"(" x:IDENT -")" {Read x}
+        | -"while" e:expr
+          -"do" body:stmts -"od"    {While (e, body)}
+        | -"skip"                   {Skip}
+        | -"repeat" body:stmts
+          -"until" e:expr           {Seq (body, While (Expr.Binop ("==", e, Expr.Const 0), body))}
+        | -"for" s1:stmt -"," e:expr "," s2:stmt
+          -"do" s3:stmts -"od"      {Seq (s1, While (e, Seq (s3, s2)))}
+        | special_if
+        ;
+
 
       stmts:
         <s::ss> : !(Util.listBy)[ostap(";")][stmt] {

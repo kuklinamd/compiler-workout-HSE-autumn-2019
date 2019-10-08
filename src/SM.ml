@@ -21,6 +21,8 @@ type prg = insn list
  *)
 type config = int list * Stmt.config
 
+let s_top (z :: stack, c) = z, (stack, c)
+
 (* Stack machine interpreter
 
      val eval : env -> config -> prg -> config
@@ -64,10 +66,24 @@ let eval_inst config inst =
     | LD    v  -> load config v
     | ST    v  -> store config v
 
+    
+let match_cond = function
+  | "nz" -> (fun z -> z != 0) 
+  | "z"  -> (fun z -> z == 0) 
+
 let rec eval env config prog =
   match prog with
-    | inst :: insts -> eval env (eval_inst config inst) insts
-    | _ -> config
+    | [] -> config
+    | inst :: insts ->
+      match inst with
+        | LABEL _            -> eval env config insts
+        | JMP label          -> eval env config (env#labeled label)
+        | CJMP (cond, label) ->
+          let z, config = s_top config in
+          if match_cond cond z
+          then eval env config (env#labeled label)
+          else eval env config insts
+        | _ -> eval env (eval_inst config inst) insts
 
 (* Top-level evaluation
 
@@ -94,30 +110,97 @@ let run p i =
    stack machine
 *)
 
-let rec compile =
-  let rec expr = function
-  | Expr.Var   x          -> [LD x]
-  | Expr.Const n          -> [CONST n]
-  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
-  in
-  function
-  | Stmt.Seq (s1, s2)  -> compile s1 @ compile s2
-  | Stmt.Read x        -> [READ; ST x]
-  | Stmt.Write e       -> expr e @ [WRITE]
-  | Stmt.Assign (x, e) -> expr e @ [ST x]
+let rec compile_expr = function
+  | Expr.Const x                  -> [CONST x]
+  | Expr.Var v                    -> [LD v]
+  | Expr.Binop (op, expr1, expr2) -> (compile_expr expr1) @ (compile_expr expr2) @ [BINOP op]
 
-(* Mine *)
-(* 
-let rec compile_expr expr =
-  match expr with
-    | Language.Expr.Const x -> [CONST x]
-    | Language.Expr.Var v -> [LD v]
-    | Language.Expr.Binop (op, expr1, expr2) -> compile_expr expr1 @ compile_expr expr2 @ [BINOP op]
+let is_none = function
+  | None -> true
+  | _    -> false
 
-let rec compile stmt =
-  match stmt with
-    | Language.Stmt.Read v             -> [READ; ST v]
-    | Language.Stmt.Write expr         -> compile_expr expr @ [WRITE]
-    | Language.Stmt.Assign (v, expr)   -> compile_expr expr @ [ST v]
-    | Language.Stmt.Seq (stmt1, stmt2) -> compile stmt1 @ compile stmt2
-*)
+let get_some = function
+  | Some x -> x
+
+class compile_state =
+  object (self)
+	val num = 0
+ 	val _out_label = None
+
+    method out_label = _out_label 
+
+    method reset_out = {< _out_label = None >}
+
+    method next_label = "label_" ^ (string_of_int num), {< num = num + 1 >}
+
+    method next_end_label =
+     let label = "label_" ^ (string_of_int num)
+     in label, {< num = num + 1; _out_label = Some label >}
+  end
+
+let gen_end_label state has_next_op =
+  if has_next_op
+  then
+    (* After the statement we have some operations so we can't make 
+     * a long jump out and need to generate a new label. *)
+    let label, state' = state#next_end_label
+    in label, state', [LABEL label]
+  else 
+   (* Here we know that there's no other operation after the statement
+      and we can either generate a new label or jump to the outter one.
+    *)
+    if is_none state#out_label
+    then
+      (* If there's no other label just generate a new one. *)
+      let l, s = state#next_end_label
+      in l, s, [LABEL l]
+    else
+      let label = get_some state#out_label
+      in label, state, [] (*[JMP label]*)
+
+let rec compile_stmt state has_next_op = function
+  (* Simple operations. *)
+  | Stmt.Read v             -> state, [READ; ST v]
+  | Stmt.Write expr         -> state, compile_expr expr @ [WRITE]
+  | Stmt.Assign (v, expr)   -> state, compile_expr expr @ [ST v]
+  | Stmt.Skip               -> state, []
+
+  (* Sequence: for stmt1 we know that it has following operation. *)
+  | Stmt.Seq (stmt1, stmt2) ->
+	let state, instr1 = compile_stmt state true  stmt1 in
+	let state, instr2 = compile_stmt state false stmt2 in
+    state, instr1 @ instr2
+
+  (* If `if` statement has a next operation we nevertheless need
+   * to generate a new label.
+   *)
+  | Stmt.If (cnd, thn, els) ->
+
+    let label_end, state, foot = gen_end_label state has_next_op in
+
+	let label_else, state = state#next_label in
+
+    let state, instr_thn  = compile_stmt state false thn in
+    let state, instr_els  = compile_stmt state false els in
+    let state = state#reset_out in
+
+    state, compile_expr cnd @
+           [CJMP ("z", label_else)] @
+           instr_thn @
+           [JMP label_end;
+            LABEL label_else] @
+           instr_els @
+		   foot
+
+  | Stmt.While (cnd, body)  ->
+    let label_start, state = state#next_label in
+    let label_end,   state = state#next_label in
+    let state, body = compile_stmt state false body in
+    state, [LABEL label_start] @
+            compile_expr cnd @
+           [CJMP ("z", label_end)] @
+            body @ 
+           [JMP label_start;
+            LABEL label_end]
+
+let compile stmt = snd @@ compile_stmt (new compile_state) false stmt
