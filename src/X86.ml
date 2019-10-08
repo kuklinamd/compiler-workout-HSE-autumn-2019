@@ -101,47 +101,6 @@ let match_cmp_op = function
    | "==" -> "e"
    | "!=" -> "ne"
 
-(*
-let compile_binop env op =
-  let x, y, env = env#pop2 in
-  env#push x, match op with
-   | "+" | "-" ->
-     [Mov (x, eax);
-      Mov (y, ebx);
-      Binop (op, eax, ebx);
-      Mov (ebx, x);]
-   | "&&" | "!!" ->
-     [Mov (x, eax);
-      Mov (y, ebx);
-	  TODO: test (1 !! 2)
-      Binop (op, eax, ebx);
-      Set ("nz", "%al");
-      Mov (eax, x)]
-   | "*" ->
-     [Mov (x, eax);
-      Mov (y, ebx);
-      Binop ("^", edx, edx);
-      Binop (op, eax, ebx);
-      Mov (ebx, x);
-      Push x]
-   | "/" ->
-     [Mov (y, eax);
-      Binop ("^", edx, edx);
-      IDiv x;
-      Mov (eax, x)]
-   | "%" ->
-     [Mov (y, eax);
-      Mov (L 0, edx);
-      IDiv x;
-      Mov (edx, x)]
-   | cmp_op ->
-     [Mov (x, eax);
-      Mov (y, ebx);
-      Binop ("^", edx, edx);
-      Binop ("cmp", x, y);
-      Set (match_cmp_op cmp_op, "%dl");
-      Mov (edx, x)]
-*)
 let compile_binop env op = 
   let x, y, env = env#pop2 in
   let env = env#push y in
