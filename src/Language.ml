@@ -5,6 +5,7 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open Ostap
 
 (* States *)
 module State =
@@ -97,20 +98,20 @@ module Expr =
     *)
     ostap (                                      
       parse:
-	  !(Ostap.Util.expr 
+      !(Ostap.Util.expr 
              (fun x -> x)
-	     (Array.map (fun (a, s) -> a, 
+         (Array.map (fun (a, s) -> a, 
                            List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
                         ) 
               [|                
-		`Lefta, ["!!"];
-		`Lefta, ["&&"];
-		`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
-		`Lefta, ["+" ; "-"];
-		`Lefta, ["*" ; "/"; "%"];
+        `Lefta, ["!!"];
+        `Lefta, ["&&"];
+        `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+        `Lefta, ["+" ; "-"];
+        `Lefta, ["*" ; "/"; "%"];
               |] 
-	     )
-	     primary);
+         )
+         primary);
       
       primary:
         n:DECIMAL {Const n}
@@ -150,13 +151,86 @@ module Stmt =
 
        which returns a list of formal parameters and a body for given definition
     *)
-    let rec eval _ = failwith "Not Implemented Yet"
-                                
+
+    let read (state, input, o) var =
+      match input with
+        | i :: ins -> (State.update var i state, ins, o)
+        | _ -> failwith "Nothing to read from the input."
+
+    let write (s, i, output) value = (s, i, output @ [value])
+
+    let assign (state, i, o) var value = (State.update var value state, i, o)
+
+    let rec eval env (state, ins, outs) as config = function
+      | Read   var              -> read config var
+      | Write  expr             -> write config (Expr.eval state expr)
+      | Assign (var, expr)      -> assign config var (Expr.eval state expr)
+      | Seq    (stmt1, stmt2)   -> eval env (eval env config stmt1) stmt2
+      | Skip                    -> config
+      | If     (cond, thn, els) -> eval env config (if Expr.eval state cond != 0 then thn else els)
+
+      | While  (cond, body) as stmt ->
+        if Expr.eval state cond != 0
+        then eval env (eval env config body) stmt
+        else config
+
+      | Repeat (body, cond) as stmt ->
+        let (state, _, _) as config = eval env config body in
+        if Expr.eval state cond == 0
+        then eval env config stmt
+        else config
+
+      | Call   (name, exprs) ->
+        let (args, locals, body) = env#definition name               in
+        let state' = State.push_scope state (args @ locals)          in
+        let exprs  = List.map (fun arg -> Expr.eval state arg) exprs in
+        let map    = List.combine args exprs                         in
+        let state' = List.fold_left (fun st (arg, expr) -> State.update arg expr st) state' map  in
+        let (state'', ins, outs) = eval env (state', ins, outs) body in
+        (State.drop_scope state'' state, ins, outs)
+
     (* Statement parser *)
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+    ostap (
+      parse: stmts; (*empty {failwith "Not implemented yet"}*)
+
+      expr: !(Expr.parse);
+
+      special_elif:
+        -"elif" e:expr -"then" thn:stmts els:special_elif {If (e, thn, els)}
+      | -"else" s:stmts -"fi"                             {s}
+      | -"fi"                                             {Skip}
+      ;
+
+      special_if:
+        -"if" e:expr -"then" thn:stmts els:special_elif   {If (e, thn, els)}
+      ;
+
+      listByDot:
+        <x::xs> : !(Util.listBy)[ostap(",")][expr] {x::xs}
+        | empty                                    {[]}
+        ;
+
+      stmt:
+          x:IDENT -":=" e:expr                 {Assign (x, e)}
+        | name:IDENT -"(" args:listByDot -")"  {Call (name, args)}
+        | -"write" -"(" e:expr -")"            {Write e}
+        | -"read" -"(" x:IDENT -")"            {Read x}
+        | -"while" e:expr
+          -"do" body:stmts -"od"               {While (e, body)}
+        | -"skip"                              {Skip}
+        | -"repeat" body:stmts
+          -"until" e:expr                      {Repeat (body, e)}
+        | -"for" s1:stmt -"," e:expr "," s2:stmt
+          -"do" s3:stmts -"od"                 {Seq (s1, While (e, Seq (s3, s2)))}
+        | special_if
+        ;
+
+      stmts:
+        <s::ss> : !(Util.listBy)[ostap(";")][stmt] {
+            List.fold_left (fun s ss -> Seq (s, ss)) s ss
+        }
     )
-      
+
   end
 
 (* Function and procedure definitions *)
@@ -166,8 +240,24 @@ module Definition =
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+
+    let from_option n = function
+      | None   -> n
+      | Some n -> n
+
+    ostap (
+      parse: func;
+
+      name: n:IDENT {n};
+
+      listByComma:
+        <x::xs> : !(Util.listBy)[ostap(",")][name] {x::xs}
+        | empty                                    {[]};
+
+      func: 
+          -"fun" n:IDENT -"(" args:listByComma -")"
+          lcs:(-"local" listByComma)?
+          -"{" body:!(Stmt.parse) -"}"             {(n, (args, from_option [] lcs, body))}
     )
 
   end
