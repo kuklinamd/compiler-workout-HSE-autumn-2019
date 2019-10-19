@@ -338,4 +338,3 @@ let eval (defs, body) i =
 
 (* Top-level parser *)
 let parse = ostap (!(Definition.parse)* !(Stmt.parse))
-let show (def, stmt) = Stmt.show_stmt stmt
