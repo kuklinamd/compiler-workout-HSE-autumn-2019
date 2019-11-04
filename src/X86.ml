@@ -34,7 +34,7 @@ type instr =
 (* x86 integer division, see instruction set reference  *) | IDiv  of opnd
 (* see instruction set reference                        *) | Cltd
 (* sets a value from flags; the first operand is the    *) | Set   of string * string
-(* suffix, which determines the value being set, the    *)                     
+(* suffix, which determines the value being set, the    *)
 (* the second --- (sub)register name                    *)
 (* pushes the operand on the hardware stack             *) | Push  of opnd
 (* pops from the hardware stack to the operand          *) | Pop   of opnd
@@ -44,7 +44,7 @@ type instr =
 (* a conditional jump                                   *) | CJmp  of string * string
 (* a non-conditional jump                               *) | Jmp   of string
 (* directive                                            *) | Meta  of string
-                                                                            
+
 (* Instruction printer *)
 let show instr =
   let binop = function
@@ -83,6 +83,140 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+let match_cmp_op = function
+   | "<"  -> "l"
+   | ">"  -> "g"
+   | "<=" -> "le"
+   | ">=" -> "ge"
+   | "==" -> "e"
+   | "!=" -> "ne"
+
+let compile_binop env op = 
+  let x, y, env = env#pop2 in
+  let env = env#push y in
+  env, match op with
+  | "+" | "-" ->
+    (match x with
+     | R _ ->
+       [Binop (op, x, y)]
+     | _   ->
+       [Mov (x, eax);
+        Binop (op, eax, y)])
+  | "*" ->
+    (match y with
+     | R _ ->
+       [Binop (op, x, y)]
+     | _   ->
+       [Mov (y, eax);
+        Binop (op, x, eax);
+        Mov (eax, y)]) 
+  | "!!" ->
+    (match x with
+     | R _ ->
+       [Binop ("^", edx, edx);
+        Binop (op, x, y);
+        Set ("nz", "%dl");
+        Mov (edx, y)]
+     | _   ->
+       [Mov (x, eax); 
+        Binop ("^", edx, edx);
+        Binop (op, eax, y);
+        Set ("nz", "%dl");
+        Mov (edx, y)]) 
+  | "&&" ->
+    [Mov (x, eax);
+     Binop ("cmp", L 0, eax);
+     Set ("nz", "%al");
+     Mov (y, edx);
+     Binop ("cmp", L 0, edx);
+     Set ("nz", "%dl");
+     Binop ("&&", edx, eax);
+     Binop ("&&", L 1, eax);
+     Mov (eax, y)]
+  | "/" ->
+    [Mov (y, eax);
+     Cltd;
+     IDiv x;
+     Mov (eax, y)]
+  | "%" ->
+    [Mov (y, eax);
+     Cltd;
+     IDiv x;
+     Mov (edx, y)]
+  | _ ->
+    [Mov   (x, eax);
+     Binop ("^", edx, edx);
+     Binop ("cmp", eax, y);
+     Set   (match_cmp_op op, "%dl");
+     Mov   (edx, y)]
+
+let compile_instr env = function
+  | BINOP op -> compile_binop env op
+  | CONST x ->
+    let pos, env = env#allocate in
+    env, [Mov (L x, pos)]
+  | READ  ->
+    let pos, env = env#allocate in
+    env, [Call "Lread"; Mov (eax, pos)]
+  | WRITE ->
+    let var, env = env#pop in
+    env, [Push var; Call "Lwrite"; Pop eax]
+  | LD v ->
+    let pos, env = env#allocate in
+    env#global v, [Mov (env#loc v, eax); Mov (eax, pos)]
+  | ST v ->
+    let var, env = env#pop in
+    env#global v, [Mov (var, eax); Mov (eax, env#loc v)]
+  | LABEL label -> env, [Label label]
+  | JMP label -> env, [Jmp label]
+  | CJMP (cnd, lbl) ->
+    let var, env = env#pop in
+    env, [Mov (var, eax); Binop ("cmp", L 0, eax); CJmp (cnd, lbl)]
+
+  | BEGIN (name, args, lcls) ->
+    let env = env#enter name args lcls in
+    env, [Push ebp; Mov (esp, ebp);
+          Binop ("-", M ("$" ^ env#lsize), esp)]
+  | END ->
+    env, [Label env#epilogue; Mov (ebp, esp); Pop ebp; Ret;
+           Meta (Printf.sprintf ".set %s, %d" env#lsize (4 * env#allocated))]
+  | RET true ->
+    let var, env = env#pop in
+    env, [Mov (var, eax); Jmp env#epilogue]
+
+  | RET _ -> env, [Jmp env#epilogue]
+  (*
+	* Save registers
+    * Push n values on stack
+    * Call 
+    * add 4 * n, esp
+    * if !is_proc then push eax to symbolic stack
+    * Restore registers
+  *)
+  | CALL (name, len, is_proc) -> 
+    let handle_proc env = function
+     | true -> env, []
+     | false -> 
+       let pos, env = env#allocate in
+       env, [Mov (eax, pos)] in
+    let rec push_args_on_stack env = function
+      | 0 -> env, []
+      | l -> 
+        let v, env = env#pop in
+        let env, stck = push_args_on_stack env (l - 1) in
+        env, (Push v)::stck in
+    let env, push_args = push_args_on_stack env len in
+    let save_regs      = List.map (fun v -> Push v) env#live_registers in
+    let restore_regs   = List.fold_right (fun v stck -> (Pop  v)::stck) env#live_registers [] in
+    let clear_stack    = [Binop ("+", L (4 * len), esp)] in
+    let env, proc      = handle_proc env is_proc in
+    env, save_regs @
+         (List.rev push_args) @
+         [Call name] @
+         clear_stack @
+         proc @
+         restore_regs
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -90,7 +224,12 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not implemented"
+let rec compile env = function
+ | [] -> env, []
+ | instr :: prog ->
+   let env, is = compile_instr env instr in
+   let env, iss = compile env prog in
+   env, is @ iss
                                 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -116,14 +255,14 @@ class env =
     (* allocates a fresh position on a symbolic stack *)
     method allocate =    
       let x, n =
-	let rec allocate' = function
-	| []                            -> ebx     , 0
-	| (S n)::_                      -> S (n+1) , n+2
-	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
+    let rec allocate' = function
+    | []                            -> ebx     , 0
+    | (S n)::_                      -> S (n+1) , n+2
+    | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
         | (M _)::s                      -> allocate' s
-	| _                             -> S 0     , 1
-	in
-	allocate' stack
+    | _                             -> S 0     , 1
+    in
+    allocate' stack
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 

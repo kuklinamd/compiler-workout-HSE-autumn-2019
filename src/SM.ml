@@ -254,12 +254,7 @@ let f (cst, acc) def =
 let compile_defs cst defs =  List.fold_left f (cst, []) defs
 
 let compile (defs, body) =
-  let program_end_label = "PROGRAM_END" in
   let cst = new compile_state in
   let cst, defs =  compile_defs cst defs in
-  let body = snd @@ compile_stmt cst false body in
-  let defs =
-    if List.length defs == 0
-    then []
-    else [JMP program_end_label] @ defs @ [LABEL program_end_label]
- in body @ defs
+  let body = snd @@ compile_stmt cst false body
+ in body @ [END] @ defs
